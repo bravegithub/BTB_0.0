@@ -1,0 +1,68 @@
+//@version=6
+indicator("FVG Fixed Zones (Current TF only)", overlay=true)
+
+// Inputs
+boxLength       = input.int(20, "Box Length", minval=5)
+maxTrackBars    = input.int(300, "Max Track Bars")
+checkForwardBars= input.int(300, "Check Forward Bars")
+
+// Arrays pour stocker les FVG
+var box[]   fvgBoxes        = array.new_box()
+var label[] fvgLabels       = array.new_label()
+var int[]   fvgCreatedBars  = array.new_int()
+var bool[]  fvgIsBullish    = array.new_bool()
+var float[] fvgCompareLevels= array.new_float()
+
+// Fonction pour dessiner un FVG fixé dans le temps
+drawFVG(barTime, top, bottom, labelText, color_, compare, isBullish, len) =>
+    realTop = math.max(top, bottom)
+    realBot = math.min(top, bottom)
+    mid     = (realTop + realBot) / 2
+    boxColor= color.new(color_, 85)
+
+    // ancrage au TEMPS (fixe, peu importe le timeframe)
+    b = box.new(left=barTime, right=barTime + len * timeframe.in_seconds(timeframe.period) * 1000, top=realTop, bottom=realBot, border_color=color.rgb(255, 255, 255,0), bgcolor=boxColor, xloc=xloc.bar_time)
+    array.push(fvgBoxes, b)
+    array.push(fvgCreatedBars, bar_index)
+    array.push(fvgIsBullish, isBullish)
+    array.push(fvgCompareLevels, compare)
+
+    lbY = isBullish ? mid : mid - (realTop - realBot) * 0.3
+    lb  = label.new(x=barTime, y=lbY, text=labelText, style=label.style_none, size=size.small, textcolor=isBullish ? color.rgb(123, 255, 0) : color.red, xloc=xloc.bar_time)
+    array.push(fvgLabels, lb)
+
+// --- Détection FVG uniquement sur le timeframe courant ---
+if low[1] > high[3] // FVG haussier
+    drawFVG(time[3], low[1], high[3], str.tostring(timeframe.period), color.rgb(255, 251, 0), high[3], true, boxLength)
+
+if high[1] < low[3] // FVG baissier
+    drawFVG(time[3], low[3], high[1], str.tostring(timeframe.period), color.red, low[3], false, boxLength)
+
+// --- Gestion des nettoyages ---
+if array.size(fvgBoxes) > 0
+    for i = array.size(fvgBoxes) - 1 to 0
+        isBullish = array.get(fvgIsBullish, i)
+        compare   = array.get(fvgCompareLevels, i)
+        createdBar= array.get(fvgCreatedBars, i)
+        age       = bar_index - createdBar
+
+        if age > maxTrackBars
+            box.delete(array.get(fvgBoxes, i))
+            label.delete(array.get(fvgLabels, i))
+            array.remove(fvgBoxes, i)
+            array.remove(fvgLabels, i)
+            array.remove(fvgCreatedBars, i)
+            array.remove(fvgIsBullish, i)
+            array.remove(fvgCompareLevels, i)
+            continue
+
+        if bar_index > createdBar and bar_index <= createdBar + checkForwardBars
+            disrespect = (isBullish and close < compare) or (not isBullish and close > compare)
+            if disrespect
+                box.delete(array.get(fvgBoxes, i))
+                label.delete(array.get(fvgLabels, i))
+                array.remove(fvgBoxes, i)
+                array.remove(fvgLabels, i)
+                array.remove(fvgCreatedBars, i)
+                array.remove(fvgIsBullish, i)
+                array.remove(fvgCompareLevels, i)

@@ -1,0 +1,279 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © kpt_gonzo
+
+//@version=5
+indicator("Valid Pullbacks and Trend", "VP&T", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+
+//============================ TYPES & METHODS ============================
+type pivotType
+    float price
+    int timestamp
+    int index
+    float barHigh
+    float barLow
+
+method copy(pivotType this, pivotType from) =>
+    this.price := from.price
+    this.timestamp := from.timestamp
+    this.index := from.index
+    this.barHigh := from.barHigh
+    this.barLow := from.barLow
+
+method invalid(pivotType this) =>
+    na(this.price)
+
+method valid(pivotType this) =>
+    not na(this.price)
+
+method invalidate(pivotType this) =>
+    this.price := na
+    this.timestamp := na
+    this.index := na
+    this.barHigh := na
+    this.barLow := na
+
+method set(pivotType this, float price, int timestamp, int index, float barHigh, float barLow) =>
+    this.price := price
+    this.timestamp := timestamp
+    this.index := index
+    this.barHigh := barHigh
+    this.barLow := barLow
+
+method setHigher(pivotType this, pivotType pivot) =>
+    if this.invalid() or pivot.price > this.price
+        this.copy(pivot)
+
+method setLower(pivotType this, pivotType pivot) =>
+    if this.invalid() or pivot.price < this.price
+        this.copy(pivot)
+
+type pivotsType
+    label[] labels
+    bool show
+    color highColor
+    color lowColor
+    string style
+    string size
+    int maxCount
+
+method add(pivotsType this, pivotType pivot, bool dir) =>
+    if this.show and this.maxCount > 0
+        labelText = switch this.style
+            "text" => dir ? "H" : "L"
+            => ""
+        textColor = dir ? this.highColor : this.lowColor
+        labelStyle = switch this.style
+            "triangle" => dir ? label.style_triangleup : label.style_triangledown
+            "dot" => label.style_circle
+            => dir ? label.style_label_down : label.style_label_up
+        labelColor = switch this.style
+            "text" => color.new(color.black, 100)
+            => dir ? this.highColor : this.lowColor
+        labelLoc = switch this.style
+            "triangle" => dir ? yloc.abovebar : yloc.belowbar
+            => yloc.price
+        lab = label.new(pivot.timestamp, pivot.price, labelText, xloc = xloc.bar_time, yloc = labelLoc, color = labelColor, style = labelStyle, textcolor = textColor, size = this.size, force_overlay = true)
+        array.push(this.labels, lab)
+        if array.size(this.labels) > this.maxCount
+            lab := array.shift(this.labels)
+            lab.delete()
+
+method addHigh(pivotsType this, pivotType pivot) =>
+    this.add(pivot, true)
+
+method addLow(pivotsType this, pivotType pivot) =>
+    this.add(pivot, false)
+
+type trendType
+    chart.point[] points
+    polyline line
+    bool show
+    color color
+    string style
+    int width
+
+method add(trendType this, pivotType pivot) =>
+    if this.show
+        this.points.push(chart.point.from_time(pivot.timestamp, pivot.price))
+
+method draw(trendType this) =>
+    if this.show
+        polyline.delete(this.line)
+        style = switch this.style
+            "solid" => line.style_solid
+            "dotted" => line.style_dotted
+            "dashed" => line.style_dashed
+        this.line := polyline.new(this.points, xloc = xloc.bar_time, line_color = this.color, line_style = style, line_width = this.width, force_overlay = true)
+
+var pivots = pivotsType.new(array.new<label>())
+var extTrend = trendType.new(array.new<chart.point>())
+var intTrend = trendType.new(array.new<chart.point>())
+
+//============================ INPUTS ============================
+const string GRP_PIVOTS = "Pivots"
+pivots.show := input.bool(true, "", group = GRP_PIVOTS, inline = "PIVOT_LABEL")
+pivots.highColor := input.color(color.new(color.red, 50), "High", group = GRP_PIVOTS, inline = "PIVOT_LABEL")
+pivots.lowColor := input.color(color.new(color.green, 50), "Low", group = GRP_PIVOTS, inline = "PIVOT_LABEL")
+pivots.style := input.string("triangle", "Style", ["text", "triangle", "dot"], group = GRP_PIVOTS, inline = "PIVOT_LABEL")
+pivots.size := input.string(size.auto, "Size", [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group = GRP_PIVOTS, inline = "PIVOT_LABEL")
+pivots.maxCount := input.int(100, "Maximum visible", minval = 0, maxval = 500, group = GRP_PIVOTS)
+
+const string GRP_TREND = "Trend"
+extTrend.show := input.bool(true, "External", group = GRP_TREND, inline = "TREND_EXT")
+extTrend.color := input.color(color.silver, "", group = GRP_TREND, inline = "TREND_EXT")
+extTrend.style := input.string("solid", "Style", ["solid", "dotted", "dashed"], group = GRP_TREND, inline = "TREND_EXT")
+extTrend.width := input.int(1, "Width", minval = 1, group = GRP_TREND, inline = "TREND_EXT")
+intTrend.show := input.bool(true, "Internal", group = GRP_TREND, inline = "TREND_INT")
+intTrend.color := input.color(color.gray, "", group = GRP_TREND, inline = "TREND_INT")
+intTrend.style := input.string("dotted", "Style", ["solid", "dotted", "dashed"], group = GRP_TREND, inline = "TREND_INT")
+intTrend.width := input.int(1, "Width", minval = 1, group = GRP_TREND, inline = "TREND_INT")
+
+// --- Zones (boxes) ---
+const string GRP_ZONES = "Pivot Zones"
+showZones  = input.bool(true, "Show pivot boxes", group = GRP_ZONES, inline = "Z1")
+zonesRight = input.int(1, "Width (bars)", minval = 1, maxval = 50, group = GRP_ZONES, inline = "Z1")
+zoneHighBg = input.color(color.new(color.red, 80), "High bg", group = GRP_ZONES, inline = "Z2")
+zoneLowBg  = input.color(color.new(color.green, 80), "Low bg", group = GRP_ZONES, inline = "Z2")
+maxZones   = input.int(200, "Maximum boxes", minval = 0, maxval = 500, group = GRP_ZONES)
+
+showMergedLabel = input.bool(false, "Show mergedSize label at 2nd pivot", group = GRP_ZONES)
+
+//============================ CORE LOGIC ============================
+find() =>
+    var bool dir = true
+    var pivotType h = pivotType.new(high, time, bar_index, high, low)
+    var pivotType l = pivotType.new(low, time, bar_index, high, low)
+    pivotType newh = pivotType.new()
+    pivotType newl = pivotType.new()
+
+    if dir
+        if low < l.price
+            if high > h.price
+                h.set(high, time, bar_index, high, low)
+            newh.copy(h)
+            dir := false
+            h.set(high, time, bar_index, high, low)
+            l.set(low, time, bar_index, high, low)
+        else if high > h.price
+            l.set(low, time, bar_index, high, low)
+            h.set(high, time, bar_index, high, low)
+    else
+        if high > h.price
+            if low < l.price
+                l.set(low, time, bar_index, high, low)
+            newl.copy(l)
+            dir := true
+            h.set(high, time, bar_index, high, low)
+            l.set(low, time, bar_index, high, low)
+        else if low < l.price
+            h.set(high, time, bar_index, high, low)
+            l.set(low, time, bar_index, high, low)
+    [newh, newl]
+
+var bool trend = na
+var pivotType eh = pivotType.new()
+var pivotType el = pivotType.new()
+var pivotType ih = pivotType.new()
+var pivotType il = pivotType.new()
+
+// --- Pullback zones (boxes) helpers/state ---
+var box[] pivotBoxes = array.new<box>()
+var box[] pullbackZones = array.new<box>()   // NEW : store pullback zones
+
+// last pivot state
+var int   lastPivotDir = na      //  1 = High pivot, 0 = Low pivot
+var pivotType lastHigh = pivotType.new()
+var pivotType lastLow  = pivotType.new()
+
+// --- Function to draw a pivot box ---
+f_draw_pivot_box(pivotType pivot, bool isHigh) =>
+    if showZones
+        left  = pivot.index
+        right = pivot.index + zonesRight
+        top   = pivot.barHigh
+        bottom = pivot.barLow
+        colBg = isHigh ? zoneHighBg : zoneLowBg
+        b = box.new(left, top, right, bottom, xloc = xloc.bar_index, bgcolor = colBg, border_color = color.new(colBg, 0))
+        array.push(pivotBoxes, b)
+        if array.size(pivotBoxes) > maxZones
+            old = array.shift(pivotBoxes)
+            box.delete(old)
+        [pivot.barHigh, pivot.barLow]
+    else
+        [na, na]
+
+// --- Function to draw pullback zone ---
+f_draw_pullback_zone(pivotType p1, pivotType p2) =>
+    if showZones
+        left  = math.min(p1.index, p2.index)
+        right = math.max(p1.index, p2.index) + zonesRight
+        top   = math.max(p1.barHigh, p2.barHigh)
+        bottom = math.min(p1.barLow, p2.barLow)
+        b = box.new(left, top, right, bottom, xloc = xloc.bar_index, bgcolor = color.new(color.blue, 85), border_color = color.blue)
+        array.push(pullbackZones, b)
+        if array.size(pullbackZones) > maxZones
+            old = array.shift(pullbackZones)
+            box.delete(old)
+
+//============================ EXECUTION ============================
+[h, l] = find()
+
+// --- When a High pivot is confirmed ---
+if h.valid()
+    pivots.addHigh(h)
+    intTrend.add(h)
+    [h_hi, h_lo] = f_draw_pivot_box(h, true)
+
+    if not na(lastPivotDir) and lastPivotDir == 0 and lastLow.valid()
+        f_draw_pullback_zone(lastLow, h)   // Pullback baissier (L → H)
+
+    lastHigh.copy(h)
+    lastPivotDir := 1
+
+    if el.invalid() and il.valid()
+        el.copy(il)
+        ih.copy(h)
+        extTrend.add(el)
+
+// --- When a Low pivot is confirmed ---
+if l.valid()
+    pivots.addLow(l)
+    intTrend.add(l)
+    [l_hi, l_lo] = f_draw_pivot_box(l, false)
+
+    if not na(lastPivotDir) and lastPivotDir == 1 and lastHigh.valid()
+        f_draw_pullback_zone(lastHigh, l)  // Pullback haussier (H → L)
+
+    lastLow.copy(l)
+    lastPivotDir := 0
+
+    if eh.invalid() and ih.valid()
+        eh.copy(ih)
+        il.copy(l)
+        extTrend.add(eh)
+
+// --- Break of structure handling (original logic) ---
+if eh.valid() and high > eh.price
+    if il.valid()
+        el.copy(il)
+        il.invalidate()
+        extTrend.add(el)
+    eh.invalidate()
+    ih.invalidate()
+
+if el.valid() and low < el.price
+    if ih.valid()
+        eh.copy(ih)
+        ih.invalidate()
+        extTrend.add(eh)
+    el.invalidate()
+    il.invalidate()
+
+if h.valid()
+    ih.setHigher(h)
+if l.valid()
+    il.setLower(l)
+
+if barstate.islast
+    intTrend.draw()
+    extTrend.draw()
