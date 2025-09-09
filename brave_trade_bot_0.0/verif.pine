@@ -1,0 +1,398 @@
+//@version=6
+indicator('BTB_0.0', overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=1000)
+
+//============================ TYPES & METHODS ============================
+type pivotType
+    float price
+    int timestamp
+    int index
+    float barHigh
+    float barLow
+
+method copy(pivotType this, pivotType from) =>
+    this.price := from.price
+    this.timestamp := from.timestamp
+    this.index := from.index
+    this.barHigh := from.barHigh
+    this.barLow := from.barLow
+    this.barLow
+
+method invalid(pivotType this) =>
+    na(this.price)
+
+method valid(pivotType this) =>
+    not na(this.price)
+
+method invalidate(pivotType this) =>
+    this.price := na
+    this.timestamp := na
+    this.index := na
+    this.barHigh := na
+    this.barLow := na
+    this.barLow
+
+method set(pivotType this, float price, int timestamp, int index, float barHigh, float barLow) =>
+    this.price := price
+    this.timestamp := timestamp
+    this.index := index
+    this.barHigh := barHigh
+    this.barLow := barLow
+    this.barLow
+
+method setHigher(pivotType this, pivotType pivot) =>
+    if this.invalid() or pivot.price > this.price
+        this.copy(pivot)
+
+method setLower(pivotType this, pivotType pivot) =>
+    if this.invalid() or pivot.price < this.price
+        this.copy(pivot)
+
+type pivotsType
+    array<label> labels
+    bool show
+    color highColor
+    color lowColor
+    string style
+    string size
+    int maxCount
+
+method add(pivotsType this, pivotType pivot, bool dir) =>
+    if this.show and this.maxCount > 0
+        labelText = switch this.style
+            'text' => dir ? 'H' : 'L'
+            => ''
+        textColor = dir ? this.highColor : this.lowColor
+        labelStyle = switch this.style
+            'triangle' => dir ? label.style_triangleup : label.style_triangledown
+            'dot' => label.style_circle
+            => dir ? label.style_label_down : label.style_label_up
+        labelColor = switch this.style
+            'text' => color.new(color.black, 100)
+            => dir ? this.highColor : this.lowColor
+        labelLoc = switch this.style
+            'triangle' => dir ? yloc.abovebar : yloc.belowbar
+            => yloc.price
+        lab = label.new(pivot.timestamp, pivot.price, labelText, xloc = xloc.bar_time, yloc = labelLoc, color = labelColor, style = labelStyle, textcolor = textColor, size = this.size, force_overlay = true)
+        array.push(this.labels, lab)
+        if array.size(this.labels) > this.maxCount
+            lab := array.shift(this.labels)
+            lab.delete()
+
+method addHigh(pivotsType this, pivotType pivot) =>
+    this.add(pivot, true)
+
+method addLow(pivotsType this, pivotType pivot) =>
+    this.add(pivot, false)
+
+type trendType
+    array<chart.point> points
+    polyline line
+    bool show
+    color color
+    string style
+    int width
+
+method add(trendType this, pivotType pivot) =>
+    if this.show
+        this.points.push(chart.point.from_time(pivot.timestamp, pivot.price))
+
+method draw(trendType this) =>
+    if this.show
+        polyline.delete(this.line)
+        style = switch this.style
+            'solid' => line.style_solid
+            'dotted' => line.style_dotted
+            'dashed' => line.style_dashed
+        this.line := polyline.new(this.points, xloc = xloc.bar_time, line_color = this.color, line_style = style, line_width = this.width, force_overlay = true)
+        this.line
+
+var pivots = pivotsType.new(array.new<label>())
+var extTrend = trendType.new(array.new<chart.point>())
+var intTrend = trendType.new(array.new<chart.point>())
+
+//============================ INPUTS ============================
+// Pivots Inputs
+const string GRP_PIVOTS = 'Pivots'
+pivots.show := input.bool(true, '', group = GRP_PIVOTS, inline = 'PIVOT_LABEL')
+pivots.highColor := input.color(color.new(color.red, 50), 'High', group = GRP_PIVOTS, inline = 'PIVOT_LABEL')
+pivots.lowColor := input.color(color.new(color.green, 50), 'Low', group = GRP_PIVOTS, inline = 'PIVOT_LABEL')
+pivots.style := input.string('triangle', 'Style', ['text', 'triangle', 'dot'], group = GRP_PIVOTS, inline = 'PIVOT_LABEL')
+pivots.size := input.string(size.auto, 'Size', [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group = GRP_PIVOTS, inline = 'PIVOT_LABEL')
+pivots.maxCount := input.int(100, 'Maximum visible', minval = 0, maxval = 500, group = GRP_PIVOTS)
+
+// Trend Inputs
+const string GRP_TREND = 'Trend'
+extTrend.show := input.bool(true, 'External', group = GRP_TREND, inline = 'TREND_EXT')
+extTrend.color := input.color(color.rgb(255, 0, 0), '', group = GRP_TREND, inline = 'TREND_EXT')
+extTrend.style := input.string('solid', 'Style', ['solid', 'dotted', 'dashed'], group = GRP_TREND, inline = 'TREND_EXT')
+extTrend.width := input.int(1, 'Width', minval = 1, group = GRP_TREND, inline = 'TREND_EXT')
+intTrend.show := input.bool(true, 'Internal', group = GRP_TREND, inline = 'TREND_INT')
+intTrend.color := input.color(color.rgb(255, 0, 0), '', group = GRP_TREND, inline = 'TREND_INT')
+intTrend.style := input.string('dashed', 'Style', ['solid', 'dotted', 'dashed'], group = GRP_TREND, inline = 'TREND_INT')
+intTrend.width := input.int(1, 'Width', minval = 1, group = GRP_TREND, inline = 'TREND_INT')
+
+// Zones Inputs
+const string GRP_ZONES = 'Pivot Zones'
+showZones = input.bool(true, 'Show pivot boxes', group = GRP_ZONES, inline = 'Z1')
+zonesRight = input.int(1, 'Width (bars)', minval = 1, maxval = 50, group = GRP_ZONES, inline = 'Z1')
+zoneHighBg = input.color(color.new(color.red, 80), 'High bg', group = GRP_ZONES, inline = 'Z2')
+zoneLowBg = input.color(color.new(color.green, 80), 'Low bg', group = GRP_ZONES, inline = 'Z2')
+maxZones = input.int(200, 'Maximum boxes', minval = 0, maxval = 500, group = GRP_ZONES)
+showMergedLabel = input.bool(false, 'Show mergedSize label at 2nd pivot', group = GRP_ZONES)
+
+// Bullish Pullback Zones Inputs
+const string GRP_BULLISH_PULLBACK = 'Bullish Pullback Zones'
+showBullishPullback = input.bool(true, 'Show Bullish Pullback Zones', group = GRP_BULLISH_PULLBACK)
+bullishPullbackColor = input.color(color.new(color.blue, 80), 'Color', group = GRP_BULLISH_PULLBACK)
+maxBullishPullbackZones = input.int(50, 'Maximum Zones', minval = 0, maxval = 500, group = GRP_BULLISH_PULLBACK)
+bullishPullbackWidth = input.int(30, 'Width (bars)', minval = 1, maxval = 30, group = GRP_BULLISH_PULLBACK)
+
+// Trend Detection Inputs
+const string GRP_TREND_DETECTION = 'Trend Detection'
+useEma300 = input.bool(true, 'Use EMA 300', group = GRP_TREND_DETECTION)
+useEma100 = input.bool(true, 'Use EMA 100', group = GRP_TREND_DETECTION)
+useEma50 = input.bool(true, 'Use EMA 50', group = GRP_TREND_DETECTION)
+useEma20 = input.bool(true, 'Use EMA 20', group = GRP_TREND_DETECTION)
+usePriceAction = input.bool(true, 'Use Price Action', group = GRP_TREND_DETECTION)
+minBullishConfirmation = input.int(2, 'Min Bullish Confirmations', minval = 1, maxval = 4, group = GRP_TREND_DETECTION)
+
+// FVG Inputs
+const string GRP_FVG = 'FVG Settings'
+showFvg = input.bool(true, 'Show FVG Zones', group = GRP_FVG)
+fvgBoxLength = input.int(20, "Box Length", minval=5, group = GRP_FVG)
+fvgMaxTrackBars = input.int(300, "Max Track Bars", group = GRP_FVG)
+fvgCheckForwardBars = input.int(300, "Check Forward Bars", group = GRP_FVG)
+fvgBullishColor = input.color(color.rgb(255, 251, 0), "Bullish FVG Color", group = GRP_FVG)
+fvgBearishColor = input.color(color.red, "Bearish FVG Color", group = GRP_FVG)
+
+//============================ CORE LOGIC ============================
+// --- Improved Trend Detection ---
+ema300 = ta.ema(close, 300)
+ema100 = ta.ema(close, 100)
+ema50 = ta.ema(close, 50)
+ema20 = ta.ema(close, 20)
+
+bullishConditions = 0
+bullishConditions := useEma300 and close > ema300 ? bullishConditions + 1 : bullishConditions
+bullishConditions := useEma100 and close > ema100 ? bullishConditions + 1 : bullishConditions
+bullishConditions := useEma50 and close > ema50 ? bullishConditions + 1 : bullishConditions
+bullishConditions := useEma20 and close > ema20 ? bullishConditions + 1 : bullishConditions
+bullishConditions := usePriceAction and close > open ? bullishConditions + 1 : bullishConditions
+
+isBullish = bullishConditions >= minBullishConfirmation
+
+find() =>
+    var bool dir = true
+    var pivotType h = pivotType.new(high, time, bar_index, high, low)
+    var pivotType l = pivotType.new(low, time, bar_index, high, low)
+    pivotType newh = pivotType.new()
+    pivotType newl = pivotType.new()
+
+    if dir
+        if low < l.price
+            if high > h.price
+                h.set(high, time, bar_index, high, low)
+            newh.copy(h)
+            dir := false
+            h.set(high, time, bar_index, high, low)
+            l.set(low, time, bar_index, high, low)
+        else if high > h.price
+            l.set(low, time, bar_index, high, low)
+            h.set(high, time, bar_index, high, low)
+    else
+        if high > h.price
+            if low < l.price
+                l.set(low, time, bar_index, high, low)
+            newl.copy(l)
+            dir := true
+            h.set(high, time, bar_index, high, low)
+            l.set(low, time, bar_index, high, low)
+        else if low < l.price
+            h.set(high, time, bar_index, high, low)
+            l.set(low, time, bar_index, high, low)
+    [newh, newl]
+
+var bool trend = false
+var pivotType eh = pivotType.new()
+var pivotType el = pivotType.new()
+var pivotType ih = pivotType.new()
+var pivotType il = pivotType.new()
+
+// --- Pullback zones (boxes) helpers/state ---
+var array<box> pivotBoxes = array.new<box>()
+var int lastPivotDir = na
+var float lastPivotHigh = na
+var float lastPivotLow = na
+var float mergedSize = na
+
+// --- Bullish Pullback Zones ---
+var pivotType lastBullishHigh = pivotType.new()
+var array<box> bullishPullbackBoxes = array.new<box>()
+
+f_draw_pivot_box(pivotType pivot, bool isHigh) =>
+    if showZones
+        left = pivot.index
+        right = pivot.index + zonesRight
+        top = pivot.barHigh
+        bottom = pivot.barLow
+        colBg = isHigh ? zoneHighBg : zoneLowBg
+        b = box.new(left, top, right, bottom, xloc = xloc.bar_index, bgcolor = colBg, border_color = color.new(colBg, 0))
+        array.push(pivotBoxes, b)
+        if array.size(pivotBoxes) > maxZones
+            old = array.shift(pivotBoxes)
+            box.delete(old)
+        [pivot.barHigh, pivot.barLow]
+    else
+        [na, na]
+
+// --- FVG Logic ---
+var box[] fvgBoxes = array.new_box()
+var label[] fvgLabels = array.new_label()
+var int[] fvgCreatedBars = array.new_int()
+var bool[] fvgIsBullish = array.new_bool()
+var float[] fvgCompareLevels = array.new_float()
+
+f_draw_fvg(int barTime, float top, float bottom, string labelText, color fvgColor, float compare, bool isBullish, int len) =>
+    realTop = math.max(top, bottom)
+    realBot = math.min(top, bottom)
+    mid = (realTop + realBot) / 2
+    boxColor = color.new(fvgColor, 85)
+    
+    b = box.new(left=barTime, right=barTime + len * timeframe.in_seconds(timeframe.period) * 1000, 
+               top=realTop, bottom=realBot, border_color=color.rgb(255, 255, 255, 0), 
+               bgcolor=boxColor, xloc=xloc.bar_time)
+    array.push(fvgBoxes, b)
+    array.push(fvgCreatedBars, bar_index)
+    array.push(fvgIsBullish, isBullish)
+    array.push(fvgCompareLevels, compare)
+    
+    lbY = isBullish ? mid : mid - (realTop - realBot) * 0.3
+    lb = label.new(x=barTime, y=lbY, text=labelText, style=label.style_none, 
+                  size=size.small, textcolor=isBullish ? color.rgb(123, 255, 0) : color.red, 
+                  xloc=xloc.bar_time)
+    array.push(fvgLabels, lb)
+
+// Cleanup FVG boxes and labels
+if array.size(fvgBoxes) > 0
+    for i = array.size(fvgBoxes) - 1 to 0
+        isBullish = array.get(fvgIsBullish, i)
+        compare = array.get(fvgCompareLevels, i)
+        createdBar = array.get(fvgCreatedBars, i)
+        age = bar_index - createdBar
+
+        if age > fvgMaxTrackBars
+            box.delete(array.get(fvgBoxes, i))
+            label.delete(array.get(fvgLabels, i))
+            array.remove(fvgBoxes, i)
+            array.remove(fvgLabels, i)
+            array.remove(fvgCreatedBars, i)
+            array.remove(fvgIsBullish, i)
+            array.remove(fvgCompareLevels, i)
+            continue
+
+        if bar_index > createdBar and bar_index <= createdBar + fvgCheckForwardBars
+            disrespect = (isBullish and close < compare) or (not isBullish and close > compare)
+            if disrespect
+                box.delete(array.get(fvgBoxes, i))
+                label.delete(array.get(fvgLabels, i))
+                array.remove(fvgBoxes, i)
+                array.remove(fvgLabels, i)
+                array.remove(fvgCreatedBars, i)
+                array.remove(fvgIsBullish, i)
+                array.remove(fvgCompareLevels, i)
+
+// Detect and draw FVG
+if showFvg
+    if low[1] > high[3] // Bullish FVG
+        f_draw_fvg(time[3], low[1], high[3], str.tostring(timeframe.period), fvgBullishColor, high[3], true, fvgBoxLength)
+    
+    if high[1] < low[3] // Bearish FVG
+        f_draw_fvg(time[3], low[3], high[1], str.tostring(timeframe.period), fvgBearishColor, low[3], false, fvgBoxLength)
+
+//============================ EXECUTION ============================
+[h, l] = find()
+
+if h.valid()
+    pivots.addHigh(h)
+    intTrend.add(h)
+    [h_hi, h_lo] = f_draw_pivot_box(h, true)
+
+    if isBullish
+        lastBullishHigh.copy(h)
+
+    if not na(lastPivotDir) and lastPivotDir == 0 and not na(h_hi) and not na(lastPivotLow)
+        mergedSize := math.abs(h_hi - lastPivotLow)
+        if showMergedLabel
+            label.new(h.timestamp, h_hi, 'mergedSize: ' + str.tostring(mergedSize, format.mintick), xloc = xloc.bar_time, style = label.style_label_down, textcolor = color.white, color = color.new(color.gray, 0), size = size.tiny)
+
+    if not na(h_hi) and not na(h_lo)
+        lastPivotDir := 1
+        lastPivotHigh := h_hi
+        lastPivotLow := h_lo
+
+    if el.invalid() and il.valid()
+        el.copy(il)
+        ih.copy(h)
+        extTrend.add(el)
+
+if l.valid()
+    pivots.addLow(l)
+    intTrend.add(l)
+    [l_hi, l_lo] = f_draw_pivot_box(l, false)
+
+    if showBullishPullback and lastBullishHigh.valid() and isBullish
+        highSize = lastBullishHigh.barHigh - lastBullishHigh.barLow
+        lowSize = l.barHigh - l.barLow
+        biggerSize = math.max(highSize, lowSize)
+
+        left = lastBullishHigh.index
+        right = left + bullishPullbackWidth
+        bottom = lastBullishHigh.barHigh
+        top = bottom + biggerSize
+
+        b = box.new(left, top, right, bottom, xloc = xloc.bar_index, bgcolor = bullishPullbackColor, border_color = color.new(bullishPullbackColor, 0))
+        array.push(bullishPullbackBoxes, b)
+        if array.size(bullishPullbackBoxes) > maxBullishPullbackZones
+            box.delete(array.shift(bullishPullbackBoxes))
+
+        lastBullishHigh.invalidate()
+
+    if not na(lastPivotDir) and lastPivotDir == 1 and not na(l_lo) and not na(lastPivotHigh)
+        mergedSize := math.abs(lastPivotHigh - l_lo)
+        if showMergedLabel
+            label.new(l.timestamp, l_lo, 'mergedSize: ' + str.tostring(mergedSize, format.mintick), xloc = xloc.bar_time, style = label.style_label_up, textcolor = color.white, color = color.new(color.gray, 0), size = size.tiny)
+
+    if not na(l_hi) and not na(l_lo)
+        lastPivotDir := 0
+        lastPivotHigh := l_hi
+        lastPivotLow := l_lo
+
+    if eh.invalid() and ih.valid()
+        eh.copy(ih)
+        il.copy(l)
+        extTrend.add(eh)
+
+if eh.valid() and high > eh.price
+    if il.valid()
+        el.copy(il)
+        il.invalidate()
+        extTrend.add(el)
+    eh.invalidate()
+    ih.invalidate()
+
+if el.valid() and low < el.price
+    if ih.valid()
+        eh.copy(ih)
+        ih.invalidate()
+        extTrend.add(eh)
+    el.invalidate()
+    il.invalidate()
+
+if h.valid()
+    ih.setHigher(h)
+if l.valid()
+    il.setLower(l)
+
+if barstate.islast
+    intTrend.draw()
+    extTrend.draw()
