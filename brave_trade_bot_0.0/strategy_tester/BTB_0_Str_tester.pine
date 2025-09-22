@@ -1,6 +1,6 @@
 //@version=6
-strategy('BTB_0.0', overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=1000)
-
+strategy("BTB_0.0 Strategy", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=1000,
+     pyramiding=0, initial_capital=10000, currency=currency.USD, default_qty_type=strategy.percent_of_equity, default_qty_value=5)
 //============================ TYPES & METHODS ============================
 type pivotType
     float price
@@ -173,19 +173,6 @@ const string GRP_TARGET = 'Target Zones'
 showTargetZones = input.bool(true, 'Show Target Zones', group = GRP_TARGET)
 targetMaxZones = input.int(50, 'Maximum boxes', minval = 0, maxval = 500, group = GRP_TARGET)
 targetZoneColor = input.color(color.new(color.green, 70), 'Color', group = GRP_TARGET)
-
-// Strategy Inputs
-const string GRP_STRATEGY = 'Strategy Orders'
-pipSize = input.float(0.01, 'Pip size (XAUUSD = 0.01)', group = GRP_STRATEGY)
-tpPips  = input.int(50, 'Take Profit (pips)', group = GRP_STRATEGY)
-slPct   = input.float(10.0, 'Stop Loss (%)', step = 0.1, group = GRP_STRATEGY)
-
-//============================ STRATEGY HELPERS ============================
-f_place_buy(string id, float entryPrice) =>
-    takeProfit = entryPrice + tpPips * pipSize
-    stopLoss   = entryPrice * (1 - slPct / 100.0)
-    strategy.entry(id, strategy.long, comment = id, limit = entryPrice)
-    strategy.exit('TP/SL ' + id, from_entry = id, stop = stopLoss, limit = takeProfit)
 
 //============================ CORE LOGIC ============================
 // --- Improved Trend Detection ---
@@ -625,45 +612,81 @@ if fvgCount > 0
             line.set_color(flb, color.yellow)
             line.set_width(flb, 1)
 
-//============================ STRATEGY ENTRIES/EXITS ============================
-// Use latest available Target Zone reference
-latestTzTop = array.size(targetZoneTops) > 0 ? array.get(targetZoneTops, array.size(targetZoneTops) - 1) : na
-latestTzBot = array.size(targetZoneBottoms) > 0 ? array.get(targetZoneBottoms, array.size(targetZoneBottoms) - 1) : na
+// ============================= BUY LABEL AU RETEST DU HAUT DE TARGETZONE =============================
 
-// Normalize zone bounds
-tzTopNorm = not na(latestTzTop) and not na(latestTzBot) ? math.max(latestTzTop, latestTzBot) : na
-tzBotNorm = not na(latestTzTop) and not na(latestTzBot) ? math.min(latestTzTop, latestTzBot) : na
+// Variables persistantes pour gérer le retest par dernière Target Zone
+var int hasRetested = 0
+var int lastTZLeft = na
 
-// Bar overlaps the latest Target Zone?
-inZoneNow = not na(tzTopNorm) and not na(tzBotNorm) and high >= tzBotNorm and low <= tzTopNorm
+// Vérifie qu'il existe au moins une Target Zone
+if array.size(targetZoneTops) > 0
+    // Récupère la dernière zone et ses niveaux
+    lastIdx = array.size(targetZones) - 1
+    lastTZTop = array.get(targetZoneTops, array.size(targetZoneTops) - 1)
+    lastTZBot = array.get(targetZoneBottoms, array.size(targetZoneBottoms) - 1)
 
-// Pullback from above into the zone and touch top boundary
-pullbackTouchTzTop = not na(tzTopNorm) and close[1] > tzTopNorm and low <= tzTopNorm
+    // Si une nouvelle zone est détectée (left différent), on réinitialise le retest
+    if lastIdx >= 0
+        curLeft = box.get_left(array.get(targetZones, lastIdx))
+        if na(lastTZLeft) or curLeft != lastTZLeft
+            hasRetested := 0
+            lastTZLeft := curLeft
 
-// Find latest FVG that lies inside the latest Target Zone
-var float latestFvgTopInZone = na
-latestFvgTopInZone := na
-if array.size(fvgTops) > 0 and array.size(fvgBottoms) > 0 and not na(tzTopNorm)
-    fvgCountLocal = math.min(array.size(fvgTops), array.size(fvgBottoms))
-    // Ensure we have up-to-date in-target flags computed earlier
-    for ii = fvgCountLocal - 1 to 0
-        ft = array.get(fvgTops, ii)
-        fb = array.get(fvgBottoms, ii)
-        fTop = math.max(ft, fb)
-        fBot = math.min(ft, fb)
-        insideTz = not na(tzTopNorm) and not na(tzBotNorm) and math.max(fBot, tzBotNorm) <= math.min(fTop, tzTopNorm)
-        if insideTz
-            latestFvgTopInZone := fTop
-            break
+    // Condition de retest : si le prix touche ou dépasse le haut de la zone
+    // Nouvelle condition de retest: le marché dépasse la target zone avec au moins 3 bougies de haut, puis reteste la zone.
+    // 1. Le marché a dépassé la target zone (lastTZTop) avec au moins 3 bougies de haut.
+    //    Pour simplifier, on va vérifier si le close des 3 dernières bougies est au-dessus de lastTZTop.
+    // 2. Ensuite, il y a un retest de la target zone (le prix touche ou rentre dans la zone).
 
-// Touch of that FVG top, with pullback context and inside the zone
-touchFvgTopInZone = not na(latestFvgTopInZone) and close[1] > latestFvgTopInZone and low <= latestFvgTopInZone and inZoneNow
+    // Vérifie si le marché a dépassé la target zone avec au moins 2 bougies de haut
+    marketAboveTZ = close[1] > lastTZTop and close[2]  > lastTZTop
 
-// Avoid multiple entries when already in position
-canEnter = strategy.position_size == 0
+    // Condition de retest: le prix actuel touche ou rentre dans la zone après avoir été au-dessus
+    retestCondition = high >= lastTZTop and low <= lastTZTop
 
-if canEnter and pullbackTouchTzTop and inZoneNow
-    f_place_buy('BUY_TargetZone', tzTopNorm)
+    if marketAboveTZ and retestCondition and hasRetested < 3
+        // Crée un label BUY sur le graphique
+        label.new(x=bar_index, y=lastTZTop,text="BUY",style=label.style_label_up, color=color.new(#7600ad, 0), textcolor=color.white, size=size.large,yloc=yloc.price,xloc=xloc.bar_index)
+        hasRetested += 1
+        
+        // Placer un BUY avec TP et SL fixes
+        strategy.entry("Buy", strategy.long)
 
-if canEnter and touchFvgTopInZone
-    f_place_buy('BUY_FVG', latestFvgTopInZone)
+        takeProfit = close + 5.0     // 50 pips
+        stopLoss   = close - 2.5     // 25 pips
+
+        strategy.exit("Exit Buy", "Buy", stop=stopLoss, limit=takeProfit)
+
+        // Label de confirmation
+        label.new(bar_index, lastTZTop, "BUY", yloc=yloc.price, color=color.green, textcolor=color.white, style=label.style_label_up)
+// and not hasRetested
+
+
+
+
+// if array.size(targetZoneTops) > 0 and array.size(targetZoneBottoms) > 0
+//     lastIdx = array.size(targetZoneTops) - 1
+//     lastTZTop = array.get(targetZoneTops, lastIdx)
+
+//     // Même condition que pour le label
+//     retest = low <= lastTZTop and close >= lastTZTop
+
+//     if retest and hasRetested == 0
+//         // Placer un BUY avec TP et SL fixes
+//         strategy.entry("Buy", strategy.long)
+
+//         takeProfit = close + 5.0     // 50 pips
+//         stopLoss   = close - 2.5     // 25 pips
+
+//         strategy.exit("Exit Buy", "Buy", stop=stopLoss, limit=takeProfit)
+
+//         // Label de confirmation
+//         label.new(bar_index, lastTZTop, "BUY", yloc=yloc.price, color=color.green, textcolor=color.white, style=label.style_label_up)
+
+//         // Empêche plusieurs trades sur le même retest
+//         hasRetested := 1
+//         lastTZLeft := bar_index
+
+//     // Reset si prix sort de la zone
+//     if close > lastTZTop
+//         hasRetested := 0
