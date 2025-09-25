@@ -1,6 +1,6 @@
 //@version=6
 strategy("BTB_0.0 Strategy", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=1000,
-     pyramiding=0, initial_capital=10000, currency=currency.USD, default_qty_type=strategy.percent_of_equity, default_qty_value=5)
+     pyramiding=0, initial_capital=10000, currency=currency.USD, default_qty_type=strategy.percent_of_equity, default_qty_value=5, calc_on_every_tick=true)
 //============================ TYPES & METHODS ============================
 type pivotType
     float price
@@ -109,6 +109,7 @@ method draw(trendType this) =>
 var pivots = pivotsType.new(array.new<label>())
 var extTrend = trendType.new(array.new<chart.point>())
 var intTrend = trendType.new(array.new<chart.point>())
+var bool[] tzIsActive = array.new_bool()
 
 //============================ INPUTS ============================
 // Pivots Inputs
@@ -159,7 +160,9 @@ minBullishConfirmation = input.int(2, 'Min Bullish Confirmations', minval = 1, m
 
 // FVG Inputs
 const string GRP_FVG = 'FVG Settings'
-showFvg = input.bool(true, 'Show FVG Zones', group = GRP_FVG)
+showFvg = input.bool(true, 'Enable FVG Detection', group = GRP_FVG)
+showFvgBoxes = input.bool(true, 'Show FVG Boxes', group = GRP_FVG)
+showFvgLines = input.bool(true, 'Show FVG Lines', group = GRP_FVG)
 fvgBoxLength = input.int(20, "Box Length", minval=5, group = GRP_FVG)
 fvgMaxTrackBars = input.int(300, "Max Track Bars", group = GRP_FVG)
 fvgCheckForwardBars = input.int(300, "Check Forward Bars", group = GRP_FVG)
@@ -171,6 +174,7 @@ fvgDisplayMode = input.string(title = 'FVG Display Mode',defval = 'In Target Zon
 // Target Zones Inputs
 const string GRP_TARGET = 'Target Zones'
 showTargetZones = input.bool(true, 'Show Target Zones', group = GRP_TARGET)
+showTargetZoneLines = input.bool(true, 'Show Target Zone Lines', group = GRP_TARGET)
 targetMaxZones = input.int(50, 'Maximum boxes', minval = 0, maxval = 500, group = GRP_TARGET)
 targetZoneColor = input.color(color.new(color.green, 70), 'Color', group = GRP_TARGET)
 
@@ -263,6 +267,7 @@ var float[] fvgCompareLevels = array.new_float()
 // Store all FVG tops/bottoms aligned with fvgBoxes
 var float[] fvgTops = array.new_float()
 var float[] fvgBottoms = array.new_float()
+var bool[] fvgHasRetested = array.new_bool()
 
 f_draw_fvg(int barIndex, float top, float bottom, string labelText, color fvgColor, float compare, bool isBullish, int len) =>
     realTop = math.max(top, bottom)
@@ -288,6 +293,7 @@ f_draw_fvg(int barIndex, float top, float bottom, string labelText, color fvgCol
                   xloc=xloc.bar_index)  // <--- ici aussi
     
     array.push(fvgLabels, lb)
+    array.push(fvgHasRetested, false)
 
 
 // Cleanup FVG boxes and labels
@@ -297,6 +303,7 @@ if array.size(fvgBoxes) > 0
         compare = array.get(fvgCompareLevels, i)
         createdBar = array.get(fvgCreatedBars, i)
         age = bar_index - createdBar
+        hasRetested = array.get(fvgHasRetested, i)
 
         if age > fvgMaxTrackBars
             box.delete(array.get(fvgBoxes, i))
@@ -308,10 +315,31 @@ if array.size(fvgBoxes) > 0
             array.remove(fvgCompareLevels, i)
             array.remove(fvgTops, i)
             array.remove(fvgBottoms, i)
+            array.remove(fvgHasRetested, i)
             continue
 
         if bar_index > createdBar and bar_index <= createdBar + fvgCheckForwardBars
             disrespect = (isBullish and close < compare) or (not isBullish and close > compare)
+            // Handle first/second retest
+            top = array.get(fvgTops, i)
+            bot = array.get(fvgBottoms, i)
+            fTop = math.max(top, bot)
+            fBot = math.min(top, bot)
+            retest = (low <= fTop and high >= fBot)
+            if retest and not hasRetested
+                array.set(fvgHasRetested, i, true)
+            else if retest and hasRetested
+                box.delete(array.get(fvgBoxes, i))
+                label.delete(array.get(fvgLabels, i))
+                array.remove(fvgBoxes, i)
+                array.remove(fvgLabels, i)
+                array.remove(fvgCreatedBars, i)
+                array.remove(fvgIsBullish, i)
+                array.remove(fvgCompareLevels, i)
+                array.remove(fvgTops, i)
+                array.remove(fvgBottoms, i)
+                array.remove(fvgHasRetested, i)
+                continue
             if disrespect
                 box.delete(array.get(fvgBoxes, i))
                 label.delete(array.get(fvgLabels, i))
@@ -322,6 +350,20 @@ if array.size(fvgBoxes) > 0
                 array.remove(fvgCompareLevels, i)
                 array.remove(fvgTops, i)
                 array.remove(fvgBottoms, i)
+                array.remove(fvgHasRetested, i)
+
+// Sync FVG boxes visibility with toggle
+if array.size(fvgBoxes) > 0
+    for i = 0 to array.size(fvgBoxes) - 1
+        b = array.get(fvgBoxes, i)
+        if not na(b)
+            isBull = array.get(fvgIsBullish, i)
+            baseCol = isBull ? fvgBullishColor : fvgBearishColor
+            // 85 opacity when visible, near transparent when hidden
+            newBg = showFvgBoxes ? color.new(baseCol, 85) : color.new(baseCol, 100)
+            newBorder = showFvgBoxes ? color.new(baseCol, 0) : color.new(baseCol, 100)
+            box.set_bgcolor(b, newBg)
+            box.set_border_color(b, newBorder)
 
 // Detect and draw FVG
 if showFvg
@@ -370,6 +412,7 @@ f_check_and_draw_target_zone(box pullbackBox, box fvgBox) =>
             array.push(targetZones, tz)
             array.push(targetZoneTops, top)
             array.push(targetZoneBottoms, bot)
+            array.push(tzIsActive, true) 
             if array.size(targetZones) > targetMaxZones
                 box.delete(array.shift(targetZones))
                 array.shift(targetZoneTops)
@@ -501,192 +544,227 @@ var label zoneLabel = na
 if barstate.islast
     label.delete(zoneLabel)
 
-// Dessine des lignes horizontales jaunes au top/bottom de chaque Target Zone
-// Redimensionne/rafraichit à chaque barre
-tzCount = math.min(array.size(targetZones), math.min(array.size(targetZoneTops), array.size(targetZoneBottoms)))
-// Ensure arrays of lines have same size by deleting extras
-while array.size(tzTopLines) > tzCount
-    line.delete(array.pop(tzTopLines))
-while array.size(tzBottomLines) > tzCount
-    line.delete(array.pop(tzBottomLines))
-if tzCount > 0
-    for i = 0 to tzCount - 1
-        yTop = array.get(targetZoneTops, i)
-        yBot = array.get(targetZoneBottoms, i)
-        x1 = bar_index
-        x2 = bar_index + 1
-        // Create or update top line at price only, extend to the right
-        if i >= array.size(tzTopLines)
-            l = line.new(x1=x1, y1=yTop, x2=x2, y2=yTop, extend=extend.right, color=color.red, width=2)
-            array.push(tzTopLines, l)
-        else
-            l = array.get(tzTopLines, i)
-            line.set_xy1(l, x1, yTop)
-            line.set_xy2(l, x2, yTop)
-            line.set_extend(l, extend.right)
-            line.set_color(l, color.red)
-            line.set_width(l, 2)
-        // Create or update bottom line at price only, extend to the right
-        if i >= array.size(tzBottomLines)
-            lb = line.new(x1=x1, y1=yBot, x2=x2, y2=yBot, extend=extend.right, color=color.red, width=2)
-            array.push(tzBottomLines, lb)
-        else
-            lb = array.get(tzBottomLines, i)
-            line.set_xy1(lb, x1, yBot)
-            line.set_xy2(lb, x2, yBot)
-            line.set_extend(lb, extend.right)
-            line.set_color(lb, color.red)
-            line.set_width(lb, 2)
+// Dessine des lignes horizontales rouges au top/bottom de chaque Target Zone
+// Respecte le toggle showTargetZoneLines
+if showTargetZoneLines
+    // Redimensionne/rafraichit à chaque barre
+    tzCount = math.min(array.size(targetZones), math.min(array.size(targetZoneTops), array.size(targetZoneBottoms)))
+    // Ensure arrays of lines have same size by deleting extras
+    while array.size(tzTopLines) > tzCount
+        line.delete(array.pop(tzTopLines))
+    while array.size(tzBottomLines) > tzCount
+        line.delete(array.pop(tzBottomLines))
+    if tzCount > 0
+        for i = 0 to tzCount - 1
+            yTop = array.get(targetZoneTops, i)
+            yBot = array.get(targetZoneBottoms, i)
+            x1 = bar_index
+            x2 = bar_index + 1
+            // Create or update top line at price only, extend to the right
+            if i >= array.size(tzTopLines)
+                l = line.new(x1=x1, y1=yTop, x2=x2, y2=yTop, extend=extend.right, color=color.red, width=2)
+                array.push(tzTopLines, l)
+            else
+                l = array.get(tzTopLines, i)
+                line.set_xy1(l, x1, yTop)
+                line.set_xy2(l, x2, yTop)
+                line.set_extend(l, extend.right)
+                line.set_color(l, color.red)
+                line.set_width(l, 2)
+            // Create or update bottom line at price only, extend to the right
+            if i >= array.size(tzBottomLines)
+                lb = line.new(x1=x1, y1=yBot, x2=x2, y2=yBot, extend=extend.right, color=color.red, width=2)
+                array.push(tzBottomLines, lb)
+            else
+                lb = array.get(tzBottomLines, i)
+                line.set_xy1(lb, x1, yBot)
+                line.set_xy2(lb, x2, yBot)
+                line.set_extend(lb, extend.right)
+                line.set_color(lb, color.red)
+                line.set_width(lb, 2)
+else
+    // Cleanup any existing lines when disabled
+    while array.size(tzTopLines) > 0
+        line.delete(array.pop(tzTopLines))
+    while array.size(tzBottomLines) > 0
+        line.delete(array.pop(tzBottomLines))
 
 // Dessine des lignes horizontales jaunes au top/bottom de chaque FVG
-fvgCount = math.min(array.size(fvgBoxes), math.min(array.size(fvgTops), array.size(fvgBottoms)))
-// Determine which FVGs to display based on target zone overlap
-// Build a local array of booleans marking whether each FVG is inside any target zone
-var bool[] fvgInTarget = array.new_bool()
-// Ensure helper matches fvgCount length
-while array.size(fvgInTarget) > fvgCount
-    array.pop(fvgInTarget)
-while array.size(fvgInTarget) < fvgCount
-    array.push(fvgInTarget, false)
-// Compute overlap flags
-if fvgCount > 0 and array.size(targetZones) > 0
-    tzN = math.min(array.size(targetZones), math.min(array.size(targetZoneTops), array.size(targetZoneBottoms)))
-    for i = 0 to fvgCount - 1
-        ft = array.get(fvgTops, i)
-        fb = array.get(fvgBottoms, i)
-        fTop = math.max(ft, fb)
-        fBot = math.min(ft, fb)
-        inside = false
-        for j = 0 to tzN - 1
-            tzTop = array.get(targetZoneTops, j)
-            tzBot = array.get(targetZoneBottoms, j)
-            tzTopNorm = math.max(tzTop, tzBot)
-            tzBotNorm = math.min(tzTop, tzBot)
-            // Overlap if FVG range intersects Target Zone range
-            if math.max(fBot, tzBotNorm) <= math.min(fTop, tzTopNorm)
-                inside := true
-                break
-        array.set(fvgInTarget, i, inside)
-while array.size(fvgTopLines) > fvgCount
-    line.delete(array.pop(fvgTopLines))
-while array.size(fvgBottomLines) > fvgCount
-    line.delete(array.pop(fvgBottomLines))
-if fvgCount > 0
-    for i = 0 to fvgCount - 1
-        showThis = switch fvgDisplayMode
-            'In Target Zones' => array.get(fvgInTarget, i)
-            'Outside Target Zones' => not array.get(fvgInTarget, i)
-            => true // 'All'
-        if not showThis
-            // If we previously drew lines at this index, hide by collapsing to zero-length and making transparent
-            if i < array.size(fvgTopLines)
-                tmp = array.get(fvgTopLines, i)
-                line.set_color(tmp, color.new(color.yellow, 100))
-            if i < array.size(fvgBottomLines)
-                tmpb = array.get(fvgBottomLines, i)
-                line.set_color(tmpb, color.new(color.yellow, 100))
-            continue
+// Respecte le toggle showFvgLines
+if showFvgLines
+    fvgCount = math.min(array.size(fvgBoxes), math.min(array.size(fvgTops), array.size(fvgBottoms)))
+    // Determine which FVGs to display based on target zone overlap
+    // Build a local array of booleans marking whether each FVG is inside any target zone
+    var bool[] fvgInTarget = array.new_bool()
+    // Ensure helper matches fvgCount length
+    while array.size(fvgInTarget) > fvgCount
+        array.pop(fvgInTarget)
+    while array.size(fvgInTarget) < fvgCount
+        array.push(fvgInTarget, false)
+    // Compute overlap flags
+    if fvgCount > 0 and array.size(targetZones) > 0
+        tzN = math.min(array.size(targetZones), math.min(array.size(targetZoneTops), array.size(targetZoneBottoms)))
+        for i = 0 to fvgCount - 1
+            ft = array.get(fvgTops, i)
+            fb = array.get(fvgBottoms, i)
+            fTop = math.max(ft, fb)
+            fBot = math.min(ft, fb)
+            inside = false
+            for j = 0 to tzN - 1
+                tzTop = array.get(targetZoneTops, j)
+                tzBot = array.get(targetZoneBottoms, j)
+                tzTopNorm = math.max(tzTop, tzBot)
+                tzBotNorm = math.min(tzTop, tzBot)
+                // Overlap if FVG range intersects Target Zone range
+                if math.max(fBot, tzBotNorm) <= math.min(fTop, tzTopNorm)
+                    inside := true
+                    break
+            array.set(fvgInTarget, i, inside)
+    while array.size(fvgTopLines) > fvgCount
+        line.delete(array.pop(fvgTopLines))
+    while array.size(fvgBottomLines) > fvgCount
+        line.delete(array.pop(fvgBottomLines))
+    if fvgCount > 0
+        for i = 0 to fvgCount - 1
+            showThis = switch fvgDisplayMode
+                'In Target Zones' => array.get(fvgInTarget, i)
+                'Outside Target Zones' => not array.get(fvgInTarget, i)
+                => true // 'All'
+            if not showThis
+                // If we previously drew lines at this index, hide by making transparent
+                if i < array.size(fvgTopLines)
+                    tmp = array.get(fvgTopLines, i)
+                    line.set_color(tmp, color.new(color.yellow, 100))
+                if i < array.size(fvgBottomLines)
+                    tmpb = array.get(fvgBottomLines, i)
+                    line.set_color(tmpb, color.new(color.yellow, 100))
+                continue
 
-        fyTop = array.get(fvgTops, i)
-        fyBot = array.get(fvgBottoms, i)
-        x1 = bar_index
-        x2 = bar_index + 1
-        if i >= array.size(fvgTopLines)
-            fl = line.new(x1=x1, y1=fyTop, x2=x2, y2=fyTop, extend=extend.right, color=color.yellow, width=1)
-            array.push(fvgTopLines, fl)
-        else
-            fl = array.get(fvgTopLines, i)
-            line.set_xy1(fl, x1, fyTop)
-            line.set_xy2(fl, x2, fyTop)
-            line.set_extend(fl, extend.right)
-            line.set_color(fl, color.yellow)
-            line.set_width(fl, 1)
-        if i >= array.size(fvgBottomLines)
-            flb = line.new(x1=x1, y1=fyBot, x2=x2, y2=fyBot, extend=extend.right, color=color.yellow, width=1)
-            array.push(fvgBottomLines, flb)
-        else
-            flb = array.get(fvgBottomLines, i)
-            line.set_xy1(flb, x1, fyBot)
-            line.set_xy2(flb, x2, fyBot)
-            line.set_extend(flb, extend.right)
-            line.set_color(flb, color.yellow)
-            line.set_width(flb, 1)
+            fyTop = array.get(fvgTops, i)
+            fyBot = array.get(fvgBottoms, i)
+            x1 = bar_index
+            x2 = bar_index + 1
+            if i >= array.size(fvgTopLines)
+                fl = line.new(x1=x1, y1=fyTop, x2=x2, y2=fyTop, extend=extend.right, color=color.yellow, width=1)
+                array.push(fvgTopLines, fl)
+            else
+                fl = array.get(fvgTopLines, i)
+                line.set_xy1(fl, x1, fyTop)
+                line.set_xy2(fl, x2, fyTop)
+                line.set_extend(fl, extend.right)
+                line.set_color(fl, color.yellow)
+                line.set_width(fl, 1)
+            if i >= array.size(fvgBottomLines)
+                flb = line.new(x1=x1, y1=fyBot, x2=x2, y2=fyBot, extend=extend.right, color=color.yellow, width=1)
+                array.push(fvgBottomLines, flb)
+            else
+                flb = array.get(fvgBottomLines, i)
+                line.set_xy1(flb, x1, fyBot)
+                line.set_xy2(flb, x2, fyBot)
+                line.set_extend(flb, extend.right)
+                line.set_color(flb, color.yellow)
+                line.set_width(flb, 1)
+else
+    // Cleanup any existing FVG lines when disabled
+    while array.size(fvgTopLines) > 0
+        line.delete(array.pop(fvgTopLines))
+    while array.size(fvgBottomLines) > 0
+        line.delete(array.pop(fvgBottomLines))
+
+// ============================= EXTEND/FREEZE TARGET ZONES ON RETEST =============================
+// Étendre automatiquement les Target Zones actives jusqu'au bar_index actuel,
+// puis les figer dès qu'un retest touche le top ou le bottom
+if array.size(targetZones) > 0 and array.size(targetZoneTops) == array.size(targetZones) and array.size(targetZoneBottoms) == array.size(targetZones)
+    for i = 0 to array.size(targetZones) - 1
+        // Ne traiter que les zones marquées actives
+        if i < array.size(tzIsActive) and array.get(tzIsActive, i)
+            tz = array.get(targetZones, i)
+            tzTop = array.get(targetZoneTops, i)
+            tzBot = array.get(targetZoneBottoms, i)
+
+            // Étend la zone à la bougie courante
+            box.set_right(tz, bar_index)
+
+            // Gèle la zone si la bougie touche le top ou le bottom
+            if (low <= tzTop and high >= tzTop) or (low <= tzBot and high >= tzBot)
+                array.set(tzIsActive, i, false)
 
 // ============================= BUY LABEL AU RETEST DU HAUT DE TARGETZONE =============================
+strategy.risk.allow_entry_in(strategy.direction.long)
 
-// Variables persistantes pour gérer le retest par dernière Target Zone
+// Variables persistantes
 var int hasRetested = 0
-var int lastTZLeft = na
+var int lastTZLeft  = na
+
+// Tableau pour stocker les trades actifs (entry_time, entry_price, id)
+var array<int>    entryTimes  = array.new_int()
+var array<float>  entryPrices = array.new_float()
+var array<string> orderIds    = array.new_string()
 
 // Vérifie qu'il existe au moins une Target Zone
 if array.size(targetZoneTops) > 0
-    // Récupère la dernière zone et ses niveaux
     lastIdx = array.size(targetZones) - 1
     lastTZTop = array.get(targetZoneTops, array.size(targetZoneTops) - 1)
     lastTZBot = array.get(targetZoneBottoms, array.size(targetZoneBottoms) - 1)
 
-    // Si une nouvelle zone est détectée (left différent), on réinitialise le retest
     if lastIdx >= 0
         curLeft = box.get_left(array.get(targetZones, lastIdx))
         if na(lastTZLeft) or curLeft != lastTZLeft
             hasRetested := 0
             lastTZLeft := curLeft
 
-    // Condition de retest : si le prix touche ou dépasse le haut de la zone
-    // Nouvelle condition de retest: le marché dépasse la target zone avec au moins 3 bougies de haut, puis reteste la zone.
-    // 1. Le marché a dépassé la target zone (lastTZTop) avec au moins 3 bougies de haut.
-    //    Pour simplifier, on va vérifier si le close des 3 dernières bougies est au-dessus de lastTZTop.
-    // 2. Ensuite, il y a un retest de la target zone (le prix touche ou rentre dans la zone).
-
-    // Vérifie si le marché a dépassé la target zone avec au moins 2 bougies de haut
-    marketAboveTZ = close[1] > lastTZTop and close[2]  > lastTZTop
-
-    // Condition de retest: le prix actuel touche ou rentre dans la zone après avoir été au-dessus
+    marketAboveTZ = close[1] > lastTZTop and close[2] > lastTZTop
     retestCondition = high >= lastTZTop and low <= lastTZTop
 
     if marketAboveTZ and retestCondition and hasRetested < 3
-        // Crée un label BUY sur le graphique
-        label.new(x=bar_index, y=lastTZTop,text="BUY",style=label.style_label_up, color=color.new(#7600ad, 0), textcolor=color.white, size=size.large,yloc=yloc.price,xloc=xloc.bar_index)
+        orderId = "Buy_" + str.tostring(timenow) + "_" + str.tostring(hasRetested)
+
+        // // Place order
+        // strategy.entry(orderId, strategy.long)
+        // takeProfit = close + 10.0
+        // stopLoss   = close - 5.0
+        // strategy.exit("Exit " + orderId, orderId, stop=stopLoss, limit=takeProfit)
+
+        // Stocke les infos dans les arrays
+        array.push(entryTimes,  timenow)
+        array.push(entryPrices, close)
+        array.push(orderIds,    orderId)
+
+        // Label
+        label.new(bar_index, lastTZTop, "RETEST TZ " + str.tostring(hasRetested+1),yloc=yloc.price, color=color.rgb(212, 0, 255), textcolor=color.white, style=label.style_label_up)
+
+        // Vérifier le retest du FVG à l'intérieur de la Target Zone
+        // Parcourir tous les FVGs actifs
+        for fvgIdx = 0 to array.size(fvgBoxes) - 1
+            fvgBox = array.get(fvgBoxes, fvgIdx)
+            fvgTop = array.get(fvgTops, fvgIdx)
+            fvgBot = array.get(fvgBottoms, fvgIdx)
+
+            // Vérifier si ce FVG est à l'intérieur de la dernière Target Zone active
+            // (On suppose que la dernière TZ est la plus pertinente pour le retest actuel)
+            isFvgInLastTZ = (fvgTop <= lastTZTop and fvgBot >= lastTZBot) or (fvgBot <= lastTZTop and fvgTop >= lastTZBot)
+
+            if isFvgInLastTZ
+                // Condition de retest du FVG: le prix touche ou entre dans la zone du FVG
+                retestFvgCondition = (low <= fvgTop and high >= fvgTop) or (low <= fvgBot and high >= fvgBot) or (low >= fvgBot and high <= fvgTop)
+
+                if retestFvgCondition
+                    label.new(bar_index, (fvgTop + fvgBot)/2, "RETEST FVG", yloc=yloc.price, color=color.rgb(0, 255, 255), textcolor=color.black, style=label.style_label_down)
+                     // Place order
+                    // strategy.entry(orderId, strategy.long)
+                    // takeProfit = close + 10.0
+                    // stopLoss   = close - 5.0
+                    // strategy.exit("Exit ", stop=stopLoss, limit=takeProfit)
+                    break // Placer un seul label par barre pour le retest FVG dans TZ
+
+
+
+
         hasRetested += 1
-        
-        // Placer un BUY avec TP et SL fixes
-        strategy.entry("Buy", strategy.long)
-
-        takeProfit = close + 5.0     // 50 pips
-        stopLoss   = close - 2.5     // 25 pips
-
-        strategy.exit("Exit Buy", "Buy", stop=stopLoss, limit=takeProfit)
-
-        // Label de confirmation
-        label.new(bar_index, lastTZTop, "BUY", yloc=yloc.price, color=color.green, textcolor=color.white, style=label.style_label_up)
-// and not hasRetested
 
 
 
 
-// if array.size(targetZoneTops) > 0 and array.size(targetZoneBottoms) > 0
-//     lastIdx = array.size(targetZoneTops) - 1
-//     lastTZTop = array.get(targetZoneTops, lastIdx)
 
-//     // Même condition que pour le label
-//     retest = low <= lastTZTop and close >= lastTZTop
 
-//     if retest and hasRetested == 0
-//         // Placer un BUY avec TP et SL fixes
-//         strategy.entry("Buy", strategy.long)
 
-//         takeProfit = close + 5.0     // 50 pips
-//         stopLoss   = close - 2.5     // 25 pips
-
-//         strategy.exit("Exit Buy", "Buy", stop=stopLoss, limit=takeProfit)
-
-//         // Label de confirmation
-//         label.new(bar_index, lastTZTop, "BUY", yloc=yloc.price, color=color.green, textcolor=color.white, style=label.style_label_up)
-
-//         // Empêche plusieurs trades sur le même retest
-//         hasRetested := 1
-//         lastTZLeft := bar_index
-
-//     // Reset si prix sort de la zone
-//     if close > lastTZTop
-//         hasRetested := 0
